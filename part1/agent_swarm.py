@@ -154,7 +154,7 @@ class ResearchAgent:
     async def research(
         self,
         query: str,
-        channel: str,
+        channels: list[str],
         session_id: str,
         budget: TokenBudget,
         channel_ctx: ChannelContext,
@@ -167,7 +167,7 @@ class ResearchAgent:
         result = {
             "agent_id":    self.agent_id,
             "session_id":  session_id,
-            "channel":     channel,
+            "channels":    channels,
             "timestamp":   time.time_ns(),
             "conclusion":  self._SPECIALTY_CONCLUSIONS.get(self.specialty, "needs_more_info"),
             "confidence":  self.confidence_weight,
@@ -175,7 +175,9 @@ class ResearchAgent:
             "tokens_used": estimated_tokens,
         }
 
-        channel_ctx.write(channel, self.agent_id, session_id, result)
+        # write to every channel this agent belongs to
+        for channel in channels:
+            channel_ctx.write(channel, self.agent_id, session_id, result)
         return result
 
 
@@ -202,27 +204,50 @@ class AgentSwarm:
     ) -> dict:
         assignments = await self._classifier.assign(query, self.agents)
 
-        tasks = []
+        # build a map of agent_id -> all channels it appears in
+        agent_channels: dict[str, list[str]] = {}
         for channel, agents in assignments.items():
             for agent in agents:
-                guard.register("orchestrator", agent.agent_id)  # register before dispatching
+                if agent.agent_id not in agent_channels:
+                    agent_channels[agent.agent_id] = []
+                agent_channels[agent.agent_id].append(channel)
+
+        # dispatch each agent once with its full list of channels
+        seen = set()
+        tasks = []
+        for agents in assignments.values():
+            for agent in agents:
+                if agent.agent_id in seen:
+                    continue
+                seen.add(agent.agent_id)
+                guard.register("orchestrator", agent.agent_id)
                 tasks.append(
-                    agent.research(query, channel, session_id, budget, self._channel_ctx)
+                    agent.research(query, agent_channels[agent.agent_id], session_id, budget, self._channel_ctx)
                 )
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        valid = [r for r in results if isinstance(r, dict)]  # filter out any exceptions
+        await asyncio.gather(*tasks, return_exceptions=True)
 
-        if not valid:
+        # vote reads from channel context, not agent returns directly
+        return self._majority_vote(session_id)
+
+    def _majority_vote(self, session_id: str) -> dict:
+        # read all results written to channels during this session
+        channel_history = self._channel_ctx.read_session(session_id)
+
+        # flatten across all channels into one list
+        all_results = [
+            entry["data"]
+            for entries in channel_history.values()
+            for entry in entries
+        ]
+
+        if not all_results:
             return {"error": "No valid results", "session_id": session_id}
 
-        return self._majority_vote(valid, session_id)
-
-    def _majority_vote(self, results: list, session_id: str) -> dict:
         score_tally:  dict[str, float] = {}
         evidence_log: dict[str, list]  = {}
 
-        for result in results:
+        for result in all_results:
             conclusion = result.get("conclusion")
             weight     = result.get("confidence", 1.0)
 
@@ -247,7 +272,7 @@ class AgentSwarm:
             "total_confidence":    score_tally[winner],
             "all_scores":          score_tally,
             "supporting_evidence": evidence_log[winner],
-            "channel_history":     self._channel_ctx.read_session(session_id),
+            "channel_history":     channel_history,
             "channels_used":       self._channel_ctx.active_channels,
         }
 
