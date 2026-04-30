@@ -124,3 +124,91 @@ class IntentClassifier:
             assignments["general"] = fallback
 
         return assignments
+
+
+# Research Agent
+
+class ResearchAgent:
+    def __init__(self, agent_id: str, specialty: str, confidence_weight: float):
+        self.agent_id = agent_id
+        self.specialty = specialty
+        self.confidence_weight = confidence_weight
+
+    _SPECIALTY_CONCLUSIONS = {
+        "security":  "approach_A",
+        "backend":   "approach_A",
+        "frontend":  "approach_B",
+        "data":      "approach_B",
+        "general":   "needs_more_info",
+    }
+
+    async def research(
+        self,
+        query: str,
+        channel: str,
+        session_id: str,
+        budget: TokenBudget,
+        channel_ctx: ChannelContext,
+    ) -> dict:
+        estimated_tokens = len(query.split()) * 10
+        budget.consume(session_id, estimated_tokens)
+
+        await asyncio.sleep(0.1)  # stub - would be a real LLM call in production
+
+        result = {
+            "agent_id":    self.agent_id,
+            "session_id":  session_id,
+            "channel":     channel,
+            "timestamp":   time.time_ns(),
+            "conclusion":  self._SPECIALTY_CONCLUSIONS.get(self.specialty, "needs_more_info"),
+            "confidence":  self.confidence_weight,
+            "reasoning":   f"Agent {self.agent_id} analysed: {query}",
+            "tokens_used": estimated_tokens,
+        }
+
+        channel_ctx.write(channel, self.agent_id, session_id, result)
+        return result
+
+
+# Orchestrator
+
+class AgentSwarm:
+    def __init__(self, agents: list, token_ceiling: int = 10_000):
+        self.agents = agents
+        self.token_ceiling = token_ceiling
+        self._classifier = IntentClassifier()
+        self._channel_ctx = ChannelContext()
+
+    async def run(self, query: str) -> dict:
+        session_id = str(uuid.uuid4())
+        budget = TokenBudget(self.token_ceiling)
+        guard = CycleGuard()
+        return await self._run_session(query, session_id, budget, guard)
+
+    async def _run_session(
+        self,
+        query: str,
+        session_id: str,
+        budget: TokenBudget,
+        guard: CycleGuard,
+    ) -> dict:
+        assignments = self._classifier.assign(query, self.agents)
+
+        tasks = []
+        for channel, agents in assignments.items():
+            for agent in agents:
+                guard.register("orchestrator", agent.agent_id)
+                tasks.append(
+                    agent.research(query, channel, session_id, budget, self._channel_ctx)
+                )
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        valid = [r for r in results if isinstance(r, dict)]
+
+        if not valid:
+            return {"error": "No valid results", "session_id": session_id}
+
+        return self._majority_vote(valid, session_id)
+
+    async def run_pipeline(self, queries: list[str]) -> list[dict]:
+        return await asyncio.gather(*[self.run(q) for q in queries])
