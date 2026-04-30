@@ -210,5 +210,37 @@ class AgentSwarm:
 
         return self._majority_vote(valid, session_id)
 
+    def _majority_vote(self, results: list, session_id: str) -> dict:
+        score_tally:  dict[str, float] = {}
+        evidence_log: dict[str, list]  = {}
+
+        for result in results:
+            conclusion = result.get("conclusion")
+            weight     = result.get("confidence", 1.0)
+
+            if conclusion not in score_tally:
+                score_tally[conclusion]  = 0.0
+                evidence_log[conclusion] = []
+
+            score_tally[conclusion] += weight
+            evidence_log[conclusion].append({
+                "agent_id":         result.get("agent_id"),
+                "channel":          result.get("channel"),
+                "confidence_given": weight,
+                "reasoning":        result.get("reasoning"),
+            })
+
+        winner = max(score_tally, key=score_tally.get)
+
+        return {
+            "session_id":          session_id,
+            "final_conclusion":    winner,
+            "total_confidence":    score_tally[winner],
+            "all_scores":          score_tally,
+            "supporting_evidence": evidence_log[winner],
+            "channel_history":     self._channel_ctx.read_session(session_id),
+            "channels_used":       self._channel_ctx.active_channels,
+        }
+
     async def run_pipeline(self, queries: list[str]) -> list[dict]:
         return await asyncio.gather(*[self.run(q) for q in queries])
