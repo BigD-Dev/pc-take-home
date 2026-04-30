@@ -89,3 +89,38 @@ class ChannelContext:
     @property
     def active_channels(self) -> list[str]:
         return list(self._channels.keys())
+
+
+# Intent Classifier
+
+class IntentClassifier:
+    _KEYWORDS: dict[str, list[str]] = {
+        "security":  ["auth", "token", "permission", "encrypt", "xss", "sql", "vulnerability"],
+        "frontend":  ["ui", "css", "html", "react", "component", "layout", "design"],
+        "backend":   ["api", "server", "database", "endpoint", "rest", "graphql"],
+        "data":      ["query", "analytics", "pipeline", "etl", "schema", "transform"],
+        "general":   [],
+    }
+
+    def classify(self, query: str) -> list[str]:
+        q = query.lower()
+        matched = [
+            intent for intent, kws in self._KEYWORDS.items()
+            if kws and any(kw in q for kw in kws)
+        ]
+        return matched if matched else ["general"]
+
+    def assign(self, query: str, agents: list) -> dict[str, list]:
+        intents = self.classify(query)
+        assignments: dict[str, list] = {}
+
+        for intent in intents:
+            matched_agents = [a for a in agents if a.specialty == intent]
+            if matched_agents:
+                assignments[intent] = matched_agents
+
+        if not assignments:
+            fallback = [a for a in agents if a.specialty == "general"] or agents
+            assignments["general"] = fallback
+
+        return assignments
