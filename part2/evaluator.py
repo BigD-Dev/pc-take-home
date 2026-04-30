@@ -1,8 +1,6 @@
-import asyncio
-
 class RetrievalEvaluator:
 
-    async def faithfulness_score(
+    def faithfulness_score(
         self,
         response: str,
         retrieved_chunks: list[str],
@@ -23,7 +21,7 @@ class RetrievalEvaluator:
             f"Chunk {i+1}: {chunk}" for i, chunk in enumerate(retrieved_chunks)
         )
 
-        # TODO: wire this up to a real model call, haiku or gpt-4o-mini should be fine
+        # wire this up to a real model call later, lightweight one is fine
         _prompt = f"""You are evaluating whether a response is grounded in the provided context.
 
                             Context chunks:
@@ -39,7 +37,7 @@ class RetrievalEvaluator:
 
                             Return only the number, nothing else."""
 
-        await asyncio.sleep(0.05)  # stub, real model call goes here e.g haiku, gpt-4o-mini
+        # stub, real model call goes here e.g a small lightweight LLM
         return 0.85  # stub response
 
     def context_precision(
@@ -60,7 +58,7 @@ class RetrievalEvaluator:
         # golden dataset is a pre-labelled reference db mapping queries to
         # known relevant chunk ids - built offline from expert annotations
         if relevant_chunk_ids is None:
-            # TODO: hook this up to the actual db, format tbd
+            # hook this up to the actual db once format is decided
             # something like: relevant_chunk_ids = golden_db.lookup(query)
             # or SELECT relevant_ids FROM golden_dataset WHERE query_hash = ?
             relevant_chunk_ids = [0, 1]  # stub response from golden dataset db
@@ -74,7 +72,7 @@ class RetrievalEvaluator:
         question should score low here.
         """
         # cosine similarity between query and response embeddings
-        # TODO: swap this out for proper cosine similarity when embedding model is ready
+        # swap this for proper cosine similarity once embedding model is wired up
         # query_vec = embed(query)
         # response_vec = embed(response)
         # return dot(q, r) / (norm(q) * norm(r))
@@ -124,7 +122,7 @@ class RetrievalEvaluator:
         diffs = [qs[i+1] - qs[i] for i in range(len(qs) - 1)]
         return self._avg(diffs)
 
-    async def _adjacent_pair_faithfulness(
+    def _adjacent_pair_faithfulness(
         self,
         response: str,
         chunks: list[str],
@@ -141,13 +139,13 @@ class RetrievalEvaluator:
 
         best_pair = 0.0
         for i in range(len(chunks) - 1):
-            pair_score = await self.faithfulness_score(response, [chunks[i], chunks[i+1]])
+            pair_score = self.faithfulness_score(response, [chunks[i], chunks[i+1]])
             if pair_score > best_pair:
                 best_pair = pair_score
 
         return round(best_pair - solo_score, 2)
 
-    async def failure_category(
+    def failure_category(
         self,
         query: str,
         response: str,
@@ -162,14 +160,14 @@ class RetrievalEvaluator:
             ranking_failure | ok
 
         """
-        faith     = await self.faithfulness_score(response, retrieved_chunks)
+        faith     = self.faithfulness_score(response, retrieved_chunks)
         relevance = self.answer_relevance(query, response)
         precision = self.context_precision(query, retrieved_chunks, top_k_chunks, relevant_chunk_ids)
 
         # chunk boundary - model is grounded (not hallucinating) but the response
         # still doesnt answer the question properly. adjacent chunk pairs scoring
         # much higher than solo chunks confirms the answer was split across a boundary
-        b_lift = await self._adjacent_pair_faithfulness(response, retrieved_chunks, faith)
+        b_lift = self._adjacent_pair_faithfulness(response, retrieved_chunks, faith)
         if faith >= 0.4 and relevance < 0.3 and b_lift > 0.15:
             return "chunk_boundary"
 
@@ -177,7 +175,7 @@ class RetrievalEvaluator:
         # golden dataset tells us where relevant chunks sit in the full ranking
         # if theyre concentrated in lower quantiles the ranker got it wrong
         if full_ranked_chunks is not None:
-            rank_corr = self._quantile_correlation(query, full_ranked_chunks)
+            rank_corr = self._quantile_correlation(full_ranked_chunks)
             if rank_corr > 0.1 and faith < 0.4:
                 return "ranking_failure"
 
@@ -190,5 +188,5 @@ class RetrievalEvaluator:
         if faith < 0.4 and precision < 0.4:
             return "retrieval_miss"
 
-        # TODO: thresholds here might need tuning once real models are wired in
+        # thresholds here might need tuning once real models are wired in
         return "ok"

@@ -98,8 +98,8 @@ class ChannelContext:
 class IntentClassifier:
 
     async def _llm_classify(self, query: str) -> list[str]:
-        # stub - in production a fast low-cost model (e.g. haiku, phi, mistral-7b,
-        # gpt-4o-mini, gemini flash) would read the prompt and return specialist names directly
+        # stub, in production a fast lightweight model would read the prompt
+        # and return specialist names directly
         _prompt = f"""You are a routing assistant for a global investment office.
                         Given a user query, return the relevant research specialist(s) from the list below.
 
@@ -107,7 +107,7 @@ class IntentClassifier:
                         - macro: global markets, interest rates, inflation, geopolitical risk, central banks
                         - equities: public markets, stock research, sector analysis, earnings, valuation
                         - alternatives: hedge funds, private equity, real assets, co-investments, illiquid
-                        # TODO: add risk, allocation, esg etc
+                        # add risk, allocation, esg etc as needed
 
                         Query: {query}
 
@@ -147,7 +147,7 @@ class ResearchAgent:
         "macro":        "approach_A",
         "equities":     "approach_A",
         "alternatives": "approach_B",
-        # TODO: add risk, allocation, esg etc
+        # add risk, allocation, esg etc as needed
         "general":      "needs_more_info",
     }
 

@@ -1,34 +1,27 @@
 .env
 
-# python
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 
-# venv
 .venv/
 venv/
 env/
 
-# pytest
 .pytest_cache/
 .cache/
 
-# coverage
 .coverage
 htmlcov/
 
-# mypy
 .mypy_cache/
 
-# editors
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# os
 .DS_Store
 Thumbs.db

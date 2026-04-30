@@ -80,12 +80,12 @@ class TokenBudgetDispatcher:
         self,
         fn: Callable[[], Awaitable[dict]],
         max_retries: int = 3,
-        base: float = 0.5,
-        cap: float = 30.0,
+        base_delay: float = 1.0,
     ) -> dict:
         # common error: random.uniform(0, cap) flat window every attempt, doesnt actually grow exponentially
-        # correct full jitter = uniform between 0 and min(cap, base * 2**attempt) so early retrys
+        # correct full jitter = uniform between 0 and min(cap, base_delay * 2**attempt) so early retrys
         # have a small window that grows each attempt untill it hits the cap
+        cap = 30.0  # hardcoded ceiling so retries dont blow out to silly numbers like 1000+ seconds
         for attempt in range(max_retries + 1):
             try:
                 return await self.dispatch(fn)
@@ -95,7 +95,7 @@ class TokenBudgetDispatcher:
                 if attempt == max_retries:
                     raise
                 # window grows exponentialy with each attempt, not flat accross all retries
-                sleep = random.uniform(0, min(cap, base * 2 ** attempt))
+                sleep = random.uniform(0, min(cap, base_delay * 2 ** attempt))
                 await asyncio.sleep(sleep)
 
     def budget_remaining(self) -> int:

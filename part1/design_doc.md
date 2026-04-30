@@ -18,7 +18,7 @@
 ║  ┌─────────────────────────────────────────────────────────────────────────────────┐     ║
 ║  │                           IntentClassifier                                      │     ║
 ║  │                                                                                 │     ║
-║  │   prompt → lightweight model (stub: haiku, gpt-4o-mini, gemini flash etc)       │     ║
+║  │   prompt → lightweight model (stub)                                             │     ║
 ║  │   "which specialists should handle this query?"                                 │     ║
 ║  │                                                                                 │     ║
 ║  │   Specialists:                                                                  │     ║
