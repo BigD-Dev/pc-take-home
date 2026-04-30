@@ -58,3 +58,34 @@ class CycleGuard:
             visited.add(node)
             stack.extend(self._chain.get(node, set()))
         return False
+
+
+# Channel Context
+
+class ChannelContext:
+    def __init__(self):
+        self._channels: dict[str, dict[tuple, dict]] = {}
+
+    def write(self, channel: str, agent_id: str, session_id: str, data: dict) -> None:
+        if channel not in self._channels:
+            self._channels[channel] = {}
+        key = (agent_id, session_id, time.time_ns())
+        self._channels[channel][key] = data
+
+    def read_channel(self, channel: str, session_id: str) -> list[dict]:
+        entries = [
+            {"key": k, "data": v}
+            for k, v in self._channels.get(channel, {}).items()
+            if k[1] == session_id
+        ]
+        return sorted(entries, key=lambda e: e["key"][2])
+
+    def read_session(self, session_id: str) -> dict[str, list]:
+        return {
+            ch: self.read_channel(ch, session_id)
+            for ch in self._channels
+        }
+
+    @property
+    def active_channels(self) -> list[str]:
+        return list(self._channels.keys())
