@@ -104,3 +104,24 @@ My intial fix was to add a lock (`asyncio.Lock`) on every read and write to seri
 2.  fixes the symptom (race condition) without fixing the cause (shared mutable context). The context still belongs to the agent instance, meaning the architecture still couples query state to agent identity.
 
 The chosen approach instead was to move context ownership  out of the agent and into `ChannelContext`, keyed by `(agent_id, session_id, timestamp_ns)`. Each query owns its own session_id, so concurrent writes to the same channel never collide and they produce distinct keys. This way no lock is needed and there's still full concurrency.
+
+---
+
+## Part 2c — Targeted Retrieval Improvement
+
+### Dominant failure mode: `ranking_failure`
+
+Ranking failure directly caused the error in Query 2. It could also be seen and partially contributed to the issue in Query 3 whereby Chunk E (a different strategy) being ranked highly enough to enter Top-K is the same underlying problem.
+
+### Proposed fix: Add metadata pre-filter against a metadata ref table linekd by ID to retrieval table, before retrieval
+
+Before running the vector search, extract the strategy name from the query ("Alternative Credit", "Real Assets" etc.) and filter the candidate pool to only chunks tagged with that strategy or with a reference column in a table containing the required value or code etc. The retriever then ranks within a clean set rather than across the entire dataset.
+
+This is specific to ranking failure because the problem is not embedding quality as "redemption gate policy (general)" is semantically close to "liquidity terms for Alternative Credit" so the model ranks it highly regardless. Filtering by strategy metadata removes it from contention before ranking even runs, so the correct strategy related chunk rises to the top.
+
+### How to measure whether it worked
+
+- `ranking_failure` rate in `failure_category` should theoretically drop. Then run the same three queries after the fix and check Q2 no longer returns `ranking_failure` as one of the 5 options.
+- `_quantile_correlation` should move toward 0 or negative (if scores go down as rank goes up) it's good ranker. Relevant chunks should now be concentrated in the top quantiles, not the lower ones.
+- `context_precision` should increase for bOTH QUERIES  as the retrieved set becomes cleaner.
+-  A successful fix would show `failure_category` returning `ok` for both queries on the golden dataset.

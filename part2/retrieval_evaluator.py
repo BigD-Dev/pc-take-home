@@ -1,11 +1,8 @@
 import asyncio
-import time
-from statistics import mean
-
 
 class RetrievalEvaluator:
 
-    def faithfulness_score(
+    async def faithfulness_score(
         self,
         response: str,
         retrieved_chunks: list[str],
@@ -15,35 +12,58 @@ class RetrievalEvaluator:
         the retrieved context. A response that introduces facts not
         present in any chunk should score low.
         """
-        # LLM-as-judge would be ideal here - prompt a model to verify each
-        # claim in the response against the chunks one by one. Using token
-        # overlap as a stub heuristic instead.
-        # Trade-off: misses paraphrasing but needs no API call and is fast.
+        # LLM-as-judge because the model reasons about meaning not just word matching
+        # so it catches paraphrasing that token overlap would miss entirely
+        # e.g "exits every 3 months" vs "quarterly redemptions" is the same thing but zero overlap
+        # needs an API call and adds latency but much more accurate
         if not response or not retrieved_chunks:
             return 0.0
 
-        response_tokens = set(response.lower().split())
-        chunk_tokens = set()
-        for chunk in retrieved_chunks:
-            chunk_tokens.update(chunk.lower().split())
+        chunks_text = "\n\n".join(
+            f"Chunk {i+1}: {chunk}" for i, chunk in enumerate(retrieved_chunks)
+        )
 
-        overlap = response_tokens & chunk_tokens
-        return round(len(overlap) / len(response_tokens), 2)
+        # TODO: wire this up to a real model call, haiku or gpt-4o-mini should be fine
+        _prompt = f"""You are evaluating whether a response is grounded in the provided context.
+
+                            Context chunks:
+                            {chunks_text}
+
+                            Response:
+                            {response}
+
+                            For each claim or fact in the response, check whether it is directly supported by one of the chunks above.
+                            Return a single float between 0.0 and 1.0 where:
+                            1.0 = every fact in the response appears in the chunks
+                            0.0 = none of the facts in the response appear in the chunks
+
+                            Return only the number, nothing else."""
+
+        await asyncio.sleep(0.05)  # stub, real model call goes here e.g haiku, gpt-4o-mini
+        return 0.85  # stub response
 
     def context_precision(
         self,
+        query: str,
         retrieved_chunks: list[str],
-        relevant_chunk_ids: list[int],
+        top_k_chunks: list[str],
+        relevant_chunk_ids: list[int] = None,
     ) -> float:
         """
         Score 0.0-1.0: proportion of retrieved chunks that are
         genuinely relevant to the query.
         """
-        # pure heuristic - precision = relevant retrieved / total retrieved
-        # relevant_chunk_ids are ground truth labels for which chunk positions are useful
-        # Trade-off: requires ground truth labels but gives exact precision, no model needed
         if not retrieved_chunks:
             return 0.0
+
+        # if we dont have labels just hit the golden dataset
+        # golden dataset is a pre-labelled reference db mapping queries to
+        # known relevant chunk ids - built offline from expert annotations
+        if relevant_chunk_ids is None:
+            # TODO: hook this up to the actual db, format tbd
+            # something like: relevant_chunk_ids = golden_db.lookup(query)
+            # or SELECT relevant_ids FROM golden_dataset WHERE query_hash = ?
+            relevant_chunk_ids = [0, 1]  # stub response from golden dataset db
 
         return round(len(relevant_chunk_ids) / len(retrieved_chunks), 2)
 
@@ -53,132 +73,122 @@ class RetrievalEvaluator:
         A response that is factually grounded but answers a different
         question should score low here.
         """
-        # embedding cosine similarity would be ideal here - encode query and response
-        # as vectors and measure semantic alignment in embedding space.
-        # Using word overlap as a stub instead.
-        # Trade-off: misses semantic similarity (synonyms, paraphrasing) but avoids
-        # embedding model dependency - swap this out for sentence-transformers in prod
+        # cosine similarity between query and response embeddings
+        # TODO: swap this out for proper cosine similarity when embedding model is ready
+        # query_vec = embed(query)
+        # response_vec = embed(response)
+        # return dot(q, r) / (norm(q) * norm(r))
+        # high score = response is semantically close to what was asked
+        # catches semantic drift that word overlap completley misses
         if not query or not response:
             return 0.0
 
-        query_tokens = set(query.lower().split())
-        response_tokens = set(response.lower().split())
+        return 0.75  # stub
 
-        overlap = query_tokens & response_tokens
-        return round(len(overlap) / len(query_tokens), 2)
-
-    def _score_chunk_relevance(self, chunk: str, query: str) -> float:
-        # token overlap between a single chunk and the query
-        # used internally to score chunks without ground truth labels
-        query_tokens = set(query.lower().split())
-        chunk_tokens = set(chunk.lower().split())
-        if not query_tokens:
+    def _avg(self, values: list[float]) -> float:
+        # simple mean, didnt want to pull in a whole package for one line
+        if not values:
             return 0.0
-        return len(query_tokens & chunk_tokens) / len(query_tokens)
+        return sum(values) / len(values)
 
     def _quantile_correlation(
         self,
-        query: str,
         full_ranked_chunks: list[str],
         n_quantiles: int = 4,
     ) -> float:
-        # splits the full ranked list into quantiles and scores each chunk's
-        # relevance to the query. returns a correlation coefficient:
-        # negative value = lower ranked chunks are MORE relevant than higher ranked ones
-        # which is a strong signal of ranking failure
+        # splits the full ranked list into buckets and checks what proportion
+        # of golden-dataset relevant chunks fall in each bucket.
+        # if lower ranked buckets have more relevant chunks than the top bucket
+        # the ranker is surfacing the wrong stuff at the top. ranking failure signal
+        # positive return means relevant chunks are concentrated lower down which is bad
         if not full_ranked_chunks:
             return 0.0
 
+        # Need to replace with real golden db lookup
+        # relevant_positions = golden_db.lookup_positions(query, full_ranked_chunks)
+        relevant_positions = set([5, 6])  # stub, simulates relevant chunks just outside TOP_K
+
         size = max(1, len(full_ranked_chunks) // n_quantiles)
-        quantile_scores = []
+        qs = []
 
         for i in range(n_quantiles):
             start = i * size
             end = start + size if i < n_quantiles - 1 else len(full_ranked_chunks)
-            batch = full_ranked_chunks[start:end]
-            if batch:
-                quantile_scores.append(mean(
-                    self._score_chunk_relevance(c, query) for c in batch
-                ))
+            bucket = set(range(start, end))
+            qs.append(len(bucket & relevant_positions) / max(len(bucket), 1))
 
-        if len(quantile_scores) < 2:
+        if len(qs) < 2:
             return 0.0
 
-        # simple correlation: are scores increasing as rank gets worse?
-        # positive = lower quantiles more relevant = ranking is inverted = bad
-        diffs = [quantile_scores[i+1] - quantile_scores[i]
-                 for i in range(len(quantile_scores) - 1)]
-        return mean(diffs)
+        # if scores go up as rank goes down, the ranker is getting it backwards
+        diffs = [qs[i+1] - qs[i] for i in range(len(qs) - 1)]
+        return self._avg(diffs)
 
-    def _adjacent_pair_faithfulness(
+    async def _adjacent_pair_faithfulness(
         self,
         response: str,
         chunks: list[str],
+        solo_score: float,  # pass in the faithfulness score already computed, no need to redo it
     ) -> float:
-        # scores pairs of adjacent chunks together against the response
-        # if a pair scores significantly higher than either chunk alone,
-        # the answer likely straddles a chunk boundary
+        # offline scoring: run this after the fact against stored responses and chunks
+        # not something you'd call at inference time, too slow and not needed live
+        # checks if combining adjacent chunks gives a much higher faithfulness
+        # score than any single chunk alone. if it does the answer was probably
+        # split across a chunk boundary.
+        # note: wont produce meaningful results until faithfulness stub is replaced
         if len(chunks) < 2:
             return 0.0
 
-        best_pair_score = 0.0
-        best_solo_score = max(
-            self.faithfulness_score(response, [c]) for c in chunks
-        )
-
+        best_pair = 0.0
         for i in range(len(chunks) - 1):
-            pair_score = self.faithfulness_score(response, [chunks[i], chunks[i+1]])
-            best_pair_score = max(best_pair_score, pair_score)
+            pair_score = await self.faithfulness_score(response, [chunks[i], chunks[i+1]])
+            if pair_score > best_pair:
+                best_pair = pair_score
 
-        # return how much better a pair is vs the best single chunk
-        return round(best_pair_score - best_solo_score, 2)
+        return round(best_pair - solo_score, 2)
 
-    def failure_category(
+    async def failure_category(
         self,
         query: str,
         response: str,
         retrieved_chunks: list[str],
-        full_ranked_chunks: list[str] = None,   # full list before TOP_K cutoff
-        relevant_chunk_ids: list[int] = None,   # ground truth labels if available
+        top_k_chunks: list[str],
+        full_ranked_chunks: list[str] = None,  # needed for ranking failure detection
+        relevant_chunk_ids: list[int] = None,  # ground truth labels, pulled from golden dataset if not passed
     ) -> str:
         """
         Returns one of:
             retrieval_miss | context_pollution | chunk_boundary |
             ranking_failure | ok
-        """
-        # compute core scores
-        faith      = self.faithfulness_score(response, retrieved_chunks)
-        relevance  = self.answer_relevance(query, response)
-        precision  = (
-            self.context_precision(retrieved_chunks, relevant_chunk_ids)
-            if relevant_chunk_ids is not None
-            else mean(self._score_chunk_relevance(c, query) for c in retrieved_chunks)
-            # fall back to heuristic precision if no ground truth labels provided
-        )
 
-        # chunk boundary check - run before other checks since it has a
-        # specific signature: faith is ok but relevance is low, and adjacent
-        # pairs score meaningfully higher than individual chunks
-        boundary_lift = self._adjacent_pair_faithfulness(response, retrieved_chunks)
-        if faith >= 0.4 and relevance < 0.3 and boundary_lift > 0.15:
+        """
+        faith     = await self.faithfulness_score(response, retrieved_chunks)
+        relevance = self.answer_relevance(query, response)
+        precision = self.context_precision(query, retrieved_chunks, top_k_chunks, relevant_chunk_ids)
+
+        # chunk boundary - model is grounded (not hallucinating) but the response
+        # still doesnt answer the question properly. adjacent chunk pairs scoring
+        # much higher than solo chunks confirms the answer was split across a boundary
+        b_lift = await self._adjacent_pair_faithfulness(response, retrieved_chunks, faith)
+        if faith >= 0.4 and relevance < 0.3 and b_lift > 0.15:
             return "chunk_boundary"
 
-        # ranking failure check - only possible if full ranked list is provided
-        # look for negative correlation between rank position and relevance score
-        # i.e. chunks outside TOP_K are more relevant than those inside it
+        # ranking failure - only detectable with the full ranked list
+        # golden dataset tells us where relevant chunks sit in the full ranking
+        # if theyre concentrated in lower quantiles the ranker got it wrong
         if full_ranked_chunks is not None:
-            rank_correlation = self._quantile_correlation(query, full_ranked_chunks)
-            if rank_correlation > 0.1 and faith < 0.4:
-                # lower quantiles (worse rank) scoring higher = ranking is inverting relevance
+            rank_corr = self._quantile_correlation(query, full_ranked_chunks)
+            if rank_corr > 0.1 and faith < 0.4:
                 return "ranking_failure"
 
-        # context pollution - retrieved chunks contain a mix of relevant and
-        # irrelevant content, model conflated them
+        # context pollution - some relevant chunks came back but so did noisy ones
+        # model blended them and produced a partially wrong answer
         if faith < 0.4 and precision >= 0.4:
             return "context_pollution"
 
-        # retrieval miss - nothing relevant came back, model hallucinated
+        # nothing useful came back at all, model had no grounding and hallucinated
         if faith < 0.4 and precision < 0.4:
             return "retrieval_miss"
 
+        # TODO: thresholds here might need tuning once real models are wired in
         return "ok"
