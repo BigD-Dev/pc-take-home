@@ -3,6 +3,7 @@ import uuid
 import time
 
 
+# custom exceptions so we can catch these specificaly in the orchestrator
 class TokenBudgetExceeded(Exception):
     pass
 
@@ -12,14 +13,14 @@ class LoopDetected(Exception):
 
 
 # Token Budget
-
 class TokenBudget:
     def __init__(self, ceiling: int):
         self.ceiling = ceiling
-        self._usage: dict[str, int] = {}
+        self._usage: dict[str, int] = {}  # tracks usage per session
 
     def consume(self, session_id: str, tokens: int) -> None:
         current = self._usage.get(session_id, 0)
+        # check BEFORE spending, not after
         if current + tokens > self.ceiling:
             raise TokenBudgetExceeded(
                 f"Session {session_id} hit ceiling: "
@@ -32,7 +33,7 @@ class TokenBudget:
 
 
 # Cycle Guard
-
+# uses DFS to check if adding a new edge would close a loop
 class CycleGuard:
     def __init__(self):
         self._chain: dict[str, set] = {}
@@ -47,6 +48,7 @@ class CycleGuard:
         self._chain[caller].add(callee)
 
     def _can_reach(self, start: str, target: str) -> bool:
+        # iterative DFS - if we can get from callee back to caller, its a cycle
         visited = set()
         stack = [start]
         while stack:
@@ -61,15 +63,15 @@ class CycleGuard:
 
 
 # Channel Context
-
+# channels are created on the fly based on intent, not predefined
 class ChannelContext:
     def __init__(self):
         self._channels: dict[str, dict[tuple, dict]] = {}
 
     def write(self, channel: str, agent_id: str, session_id: str, data: dict) -> None:
         if channel not in self._channels:
-            self._channels[channel] = {}
-        key = (agent_id, session_id, time.time_ns())
+            self._channels[channel] = {}  # create channel on first write
+        key = (agent_id, session_id, time.time_ns())  # composite key for full history
         self._channels[channel][key] = data
 
     def read_channel(self, channel: str, session_id: str) -> list[dict]:
@@ -78,7 +80,7 @@ class ChannelContext:
             for k, v in self._channels.get(channel, {}).items()
             if k[1] == session_id
         ]
-        return sorted(entries, key=lambda e: e["key"][2])
+        return sorted(entries, key=lambda e: e["key"][2])  # sort chronologicaly
 
     def read_session(self, session_id: str) -> dict[str, list]:
         return {
@@ -92,7 +94,7 @@ class ChannelContext:
 
 
 # Intent Classifier
-
+# maps query keywords to intents, each intent becomes a channel
 class IntentClassifier:
     _KEYWORDS: dict[str, list[str]] = {
         "security":  ["auth", "token", "permission", "encrypt", "xss", "sql", "vulnerability"],
@@ -119,6 +121,7 @@ class IntentClassifier:
             if matched_agents:
                 assignments[intent] = matched_agents
 
+        # fallback if nothing matched
         if not assignments:
             fallback = [a for a in agents if a.specialty == "general"] or agents
             assignments["general"] = fallback
@@ -127,13 +130,13 @@ class IntentClassifier:
 
 
 # Research Agent
-
 class ResearchAgent:
     def __init__(self, agent_id: str, specialty: str, confidence_weight: float):
         self.agent_id = agent_id
         self.specialty = specialty
         self.confidence_weight = confidence_weight
 
+    # deterministic stub conclusions so voting actually groups properly
     _SPECIALTY_CONCLUSIONS = {
         "security":  "approach_A",
         "backend":   "approach_A",
@@ -171,7 +174,6 @@ class ResearchAgent:
 
 
 # Orchestrator
-
 class AgentSwarm:
     def __init__(self, agents: list, token_ceiling: int = 10_000):
         self.agents = agents
@@ -180,7 +182,7 @@ class AgentSwarm:
         self._channel_ctx = ChannelContext()
 
     async def run(self, query: str) -> dict:
-        session_id = str(uuid.uuid4())
+        session_id = str(uuid.uuid4())  # fresh session per query, no shared state
         budget = TokenBudget(self.token_ceiling)
         guard = CycleGuard()
         return await self._run_session(query, session_id, budget, guard)
@@ -197,13 +199,13 @@ class AgentSwarm:
         tasks = []
         for channel, agents in assignments.items():
             for agent in agents:
-                guard.register("orchestrator", agent.agent_id)
+                guard.register("orchestrator", agent.agent_id)  # register before dispatching
                 tasks.append(
                     agent.research(query, channel, session_id, budget, self._channel_ctx)
                 )
 
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        valid = [r for r in results if isinstance(r, dict)]
+        valid = [r for r in results if isinstance(r, dict)]  # filter out any exceptions
 
         if not valid:
             return {"error": "No valid results", "session_id": session_id}
@@ -222,6 +224,7 @@ class AgentSwarm:
                 score_tally[conclusion]  = 0.0
                 evidence_log[conclusion] = []
 
+            # stack weights so high confidence agents can outvote multiple weaker ones
             score_tally[conclusion] += weight
             evidence_log[conclusion].append({
                 "agent_id":         result.get("agent_id"),
