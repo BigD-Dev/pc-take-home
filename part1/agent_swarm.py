@@ -94,26 +94,32 @@ class ChannelContext:
 
 
 # Intent Classifier
-# maps query keywords to intents, each intent becomes a channel
+# asks a lightweight model to route the query directly to a specialist by name
 class IntentClassifier:
-    _KEYWORDS: dict[str, list[str]] = {
-        "security":  ["auth", "token", "permission", "encrypt", "xss", "sql", "vulnerability"],
-        "frontend":  ["ui", "css", "html", "react", "component", "layout", "design"],
-        "backend":   ["api", "server", "database", "endpoint", "rest", "graphql"],
-        "data":      ["query", "analytics", "pipeline", "etl", "schema", "transform"],
-        "general":   [],
-    }
 
-    def classify(self, query: str) -> list[str]:
-        q = query.lower()
-        matched = [
-            intent for intent, kws in self._KEYWORDS.items()
-            if kws and any(kw in q for kw in kws)
-        ]
-        return matched if matched else ["general"]
+    async def _llm_classify(self, query: str) -> list[str]:
+        # stub - in production a fast low-cost model (e.g. haiku, phi, mistral-7b,
+        # gpt-4o-mini, gemini flash) would read the prompt and return specialist names directly
+        _prompt = f"""You are a routing assistant for a global investment office.
+                        Given a user query, return the relevant research specialist(s) from the list below.
 
-    def assign(self, query: str, agents: list) -> dict[str, list]:
-        intents = self.classify(query)
+                        Specialists:
+                        - macro: global markets, interest rates, inflation, geopolitical risk, central banks
+                        - equities: public markets, stock research, sector analysis, earnings, valuation
+                        - alternatives: hedge funds, private equity, real assets, co-investments, illiquid
+                        # TODO: add risk, allocation, esg etc
+
+                        Query: {query}
+
+                        Return only a comma separated list of specialist names. If nothing fits return: general"""
+
+        await asyncio.sleep(0.05)  # simulates the routing model inference
+
+        # stub - real model would return something like "macro, equities"
+        return ["macro"]
+
+    async def assign(self, query: str, agents: list) -> dict[str, list]:
+        intents = await self._llm_classify(query)
         assignments: dict[str, list] = {}
 
         for intent in intents:
@@ -138,11 +144,11 @@ class ResearchAgent:
 
     # deterministic stub conclusions so voting actually groups properly
     _SPECIALTY_CONCLUSIONS = {
-        "security":  "approach_A",
-        "backend":   "approach_A",
-        "frontend":  "approach_B",
-        "data":      "approach_B",
-        "general":   "needs_more_info",
+        "macro":        "approach_A",
+        "equities":     "approach_A",
+        "alternatives": "approach_B",
+        # TODO: add risk, allocation, esg etc
+        "general":      "needs_more_info",
     }
 
     async def research(
@@ -194,7 +200,7 @@ class AgentSwarm:
         budget: TokenBudget,
         guard: CycleGuard,
     ) -> dict:
-        assignments = self._classifier.assign(query, self.agents)
+        assignments = await self._classifier.assign(query, self.agents)
 
         tasks = []
         for channel, agents in assignments.items():
