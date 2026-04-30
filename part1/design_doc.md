@@ -125,3 +125,31 @@ This is specific to ranking failure because the problem is not embedding quality
 - `_quantile_correlation` should move toward 0 or negative (if scores go down as rank goes up) it's good ranker. Relevant chunks should now be concentrated in the top quantiles, not the lower ones.
 - `context_precision` should increase for bOTH QUERIES  as the retrieved set becomes cleaner.
 -  A successful fix would show `failure_category` returning `ok` for both queries on the golden dataset.
+
+---
+
+## Part 3a — Bug Identification
+
+### Exact lines where the bug manifests
+
+The bug is a check-then-act flaw spanning these lines in the `dispatch` method:
+
+```python
+if self.tokens_used >= self.token_budget:   # CHECK
+    raise RuntimeError('Token budget exceeded')
+
+try:
+    result = await fn()                      # YIELD POINT — control leaves here
+    tokens = result.get('tokens_used', 0)
+    self.tokens_used += tokens               # UPDATE — too late
+```
+
+The check and the update are separated by `await fn()`.
+
+### Failure mechanism — why asyncio specifically
+
+asyncio is single-threaded so there are no memory-level race conditions from parallel writes. But it uses cooperative multitasking — every `await` yields control back to the event loop, pausing the current task and letting another run. Task A checks the budget, sees room, and hits `await fn()`. While A is suspended waiting for the LLM, Task B enters, checks the same `tokens_used` (A hasn't updated it yet), also sees room, and proceeds. This repeats up to the semaphore's `max_concurrent` limit. The check and the update are not atomic because an `await` sits between them.
+
+### Conditions under which it triggers and the observable effect
+
+Triggers under high concurrent load when remaining budget is smaller than the combined token usage of all in-flight requests. For example: budget is 10,000, current usage is 9,500, semaphore allows 10 concurrent tasks. All 10 check the budget before any one of them updates it, all pass, each uses 500 tokens — final `tokens_used` lands at 14,500. The hard ceiling is completely defeated.
