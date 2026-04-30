@@ -105,6 +105,16 @@ Chose instead to move context ownership out of the agent and into `ChannelContex
 
 ---
 
+## Part 2a, Failure Categorisation
+
+**Query 1, Retrieval Miss.** The retriever pulled chunks about Q2 2023 performance, fund inception, fee structure and management charges, benchmark compare and redemption/liquidity policy, none of which contain Q3 2023 NAV data. The correct chunk simply doesn't exist in the retrieved set. The model seems to have hallucinated and given an incorrect yet specific figure ($2.4 billion, 3.2%) because it had no grounding to work from (which it shouldn't do, could be an issue with the system prompt). This is retrieval miss because the right document wasn't fetched.
+
+**Query 2, Ranking Failure.** The correct chunk did exist in the indexed records but it was ranked 6th, however TOP_K=5 so the records output was cut off before it could be retrieved. What was returned instead was a general redemption gate policy chunk (Chunk C) which contained a similar but incorrect figure (15% instead of 10%). The model used the wrong chunk because the right one was just outside the retrieval window. Redemption policy sits with fund or institutional mandates and although liquidity terms for APs may be included in the same documentation, segmenting with metadata for sections in mandates would help.
+
+**Query 3, Context Pollution.** The retriever actually got the right chunk as Chunk B contains the correct answer, but Chunk E (comparable fund, key persons) was also retrieved and it contains key person data for a different strategy. The model conflated the two, mixing names from both chunks into a single answer. The retrieval didn't miss but it returned excess noise from Chunk E which distorted the response.
+
+---
+
 ## Part 2c, Targeted Retrieval Improvement
 
 The dominant failure mode is `ranking_failure`. It directly caused the error in Query 2 and also partially contributed to Query 3, where Chunk E (a different strategy) being ranked highly enough to enter Top-K is the same underlying problem.
