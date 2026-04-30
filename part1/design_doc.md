@@ -96,11 +96,11 @@
 
 ### Rejected: Global Shared Context Dictionary
 
-The original broken implementation stored agent context as a single mutable dictionary on the agent instance (`self.shared_context`). When multiple queries ran concurrently, all tasks were reading and writing to the same memory address at the same time — whichever query finished last would overwrite every other query's context, causing complete data loss for all concurrent sessions.
+The original implementation stored agent context as a single mutable dictionary on the agent instance (`self.shared_context`). When multiple queries ran concurrently, all tasks were reading and writing to the same memory address at the same time and whichever query finished last (from random funcition stub) would overwrite every other query's context and thus losing all data hsitory for concurrent sessions (race condition).
 
-The obvious fix would have been to add a lock (`asyncio.Lock`) around every read and write to serialise access. This was deliberately rejected for two reasons:
+My intial fix was to add a lock (`asyncio.Lock`) on every read and write to serialise access. This was deliberately rejected for two reasons:
 
-1. A lock serialises concurrent writes — meaning agents that should run in parallel now wait for each other, destroying the performance benefit of using `asyncio.gather` in the first place.
-2. It fixes the symptom (race condition) without fixing the cause (shared mutable state). The context still belongs to the agent instance, meaning the architecture still couples query state to agent identity.
+1. A lock serialises concurrent writes so agents that should run in parallel now wait for each other which contradicts the benefit of using `asyncio.gather` in the first place.
+2.  fixes the symptom (race condition) without fixing the cause (shared mutable context). The context still belongs to the agent instance, meaning the architecture still couples query state to agent identity.
 
-The chosen approach instead was to move context ownership entirely out of the agent and into `ChannelContext`, keyed by `(agent_id, session_id, timestamp_ns)`. Each query owns its own session_id, so concurrent writes to the same channel never collide — they produce distinct keys. No lock needed, full concurrency preserved, and the root cause eliminated rather than papered over.
+The chosen approach instead was to move context ownership  out of the agent and into `ChannelContext`, keyed by `(agent_id, session_id, timestamp_ns)`. Each query owns its own session_id, so concurrent writes to the same channel never collide and they produce distinct keys. This way no lock is needed and there's still full concurrency.
